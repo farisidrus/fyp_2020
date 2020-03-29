@@ -1,1 +1,306 @@
 
+import pandas as pd
+import numpy as np
+import re
+import string
+import nltk
+import matplotlib.pyplot as plt
+import warnings
+import io
+import seaborn as sns
+
+warnings.filterwarnings("ignore")
+
+from nltk.corpus import stopwords
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.stem import WordNetLemmatizer
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from nltk import ne_chunk, pos_tag
+from nltk.tree import Tree
+
+from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+
+
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn import naive_bayes
+from sklearn.metrics import f1_score, confusion_matrix, accuracy_score, classification_report
+
+
+
+%matplotlib inline
+
+"""
+  Loading data 
+"""
+
+data_df = pd.read_csv('test_dataset.csv')
+sw = set(stopwords.words('english'))
+data_df.head(100)
+
+"""
+  Data Preprocessing
+"""
+# step 1: Data Cleaning
+
+punct_list = re.compile("['.',',','/','?','!','$','%','&','-','+','_','=',':',';',')','(']") # compilation of punctuation
+emoji_list = re.compile("["
+                           u"\U0001F600-\U0001F64F"  # emoticons
+                           u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+                           u"\U0001F680-\U0001F6FF"  # transport & map symbols
+                           u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                           u"\U00002702-\U000027B0"
+                           u"\U000024C2-\U0001F251"
+                           "]+", flags=re.UNICODE)
+
+
+# function to perform data cleaning
+def data_cleaning(tweet):
+    
+    # twitter handle
+    tweet = re.sub(r'@[\w]*', '', str(tweet))
+    # RT symbol
+    tweet = re.sub(r'RT','',tweet) 
+    # hyperlinks
+    tweet = re.sub(r'https?:\/\/.*[\r\n]*', '', str(tweet)) 
+    # remove hashtag
+    tweet = re.sub(r'#','', str(tweet))
+    #remove non-ascii
+    tweet = re.sub(r'[^\x00-\x7F]+',' ', str(tweet)) 
+    # remove punctuation
+    tweet = punct_list.sub(r'',str(tweet))
+    # remove emojis
+    tweet = emoji_list.sub(r'', str(tweet))
+    
+    tweet = re.sub(r'\s+', ' ', str(tweet), flags=re.I)
+    
+    tweet = re.sub(r'\^[a-zA-Z]\s+', ' ', str(tweet))
+    
+    tweet = re.sub(r'^b\s+', '', str(tweet))
+    
+    tweet = re.sub(r'\s+[a-zA-Z]\s+', ' ',str(tweet))
+    # convert into lower case
+    tweet = tweet.lower()
+    
+    return tweet
+
+
+clean_data = data_df.tweets.apply(lambda tweet: data_cleaning(tweet)) 
+data_df['clean_data'] = clean_data
+
+# step 2: Data Processing
+def data_preprocess(tweet):
+    txt_filtered_sw = []
+    lemma_w =[]
+    chunk_w =[]
+    tagged_w =[]
+    continuous_chunk = []
+    current_chunk = []
+
+    # tokenization
+    token = word_tokenize(tweet)
+
+    # remove stop words
+    for w in token:
+        if w not in sw:
+            txt_filtered_sw.append(w)
+
+    # Lemmatization
+    lemma = WordNetLemmatizer()
+    for t in txt_filtered_sw:
+        lemma_w.append(lemma.lemmatize(t))
+
+    """
+    # POS tagging
+    tag = nltk.pos_tag(lemma_w)
+
+    # Chunking and NER
+    chunked = ne_chunk(tag)
+    for c in chunked:
+        if type(c) == Tree:
+            current_chunk.append(" ".join([token for token, pos in c.leaves()]))
+        elif current_chunk:
+            ner = " ".join(current_chunk)
+            if ner not in continuous_chunk:
+                continuous_chunk.append(ner)
+                current_chunk =[]
+        else:
+            continue
+    return continuous_chunk 
+
+    """
+    lemma_w = " ".join(lemma_w)
+    
+    return lemma_w
+    
+preprocess_data = data_df.clean_data.apply(lambda tweet: data_preprocess(tweet))
+data_df['preprocess_data'] = preprocess_data
+    
+
+data_df = data_df.drop_duplicates(subset=['clean_data'], keep=False )
+data_df = data_df.reset_index(drop=True)
+
+
+"""
+Calculate Sentiment polarity
+"""
+
+def get_sentiment(text):
+    sid = SentimentIntensityAnalyzer()
+    scores = sid.polarity_scores(str(text))
+   
+    if scores['compound'] >= 0.05:
+        return 'pos'
+    elif 0.05 < scores['compound'] < -0.05:
+        return 'neu'
+    else:
+        return 'neg'
+    
+    #return 'neg' if scores['neg'] > scores['pos'] else 'pos'
+
+twt_sentiment = data_df.tweets.apply(lambda tweet: get_sentiment(tweet))
+data_df['sentiment'] = twt_sentiment
+
+def pos_score(text):
+    sid = SentimentIntensityAnalyzer()
+    score = sid.polarity_scores(str(text))
+    return score['pos']
+
+score_pos = data_df.tweets.apply(lambda tweet: pos_score(tweet))
+data_df['pos'] = score_pos
+
+def neg_score(text):
+    sid = SentimentIntensityAnalyzer()
+    score = sid.polarity_scores(str(text))
+    return score['neg']
+
+score_neg = data_df.tweets.apply(lambda tweet: neg_score(tweet))
+data_df['neg'] = score_neg
+
+def neu_score(text):
+    sid = SentimentIntensityAnalyzer()
+    score = sid.polarity_scores(str(text))
+    return score['neu']
+
+score_neu = data_df.tweets.apply(lambda tweet: neu_score(tweet))
+data_df['neu'] = score_neu
+
+def compound(text):
+    sid = SentimentIntensityAnalyzer()
+    score = sid.polarity_scores(str(text))
+    return score['compound']
+
+score_com = data_df.tweets.apply(lambda tweet: compound(tweet))
+data_df['compound'] = score_com
+
+"""
+  Model Building
+"""
+ 
+#training and testing
+vectorizer = TfidfVectorizer(use_idf=True, min_df=10,lowercase=True, strip_accents='ascii', stop_words=sw, ngram_range=(1,2))
+
+y = data_df.sentiment #target variable
+X = vectorizer.fit_transform(data_df.preprocess_data)
+
+
+#splitting testing and training
+X_train, X_test, y_train, y_test = train_test_split(X,y,random_state=1)
+
+#building a classifying model
+clf = naive_bayes.MultinomialNB()
+clf.fit(X_train,y_train)
+
+
+"""
+  Model Validation
+"""
+# get accuracy score
+prediction = clf.predict(X_test)
+print(f'Accuracy Score = {accuracy_score(y_test,prediction)}')
+print('--------------------------------------------------------------------------')
+# classification report
+print(classification_report(y_test,prediction))
+
+df_stat = data_df.loc[(data_df.loc[:, data_df.dtypes != object] != 0).any(1)]
+df_stat = data_df.describe()
+df_stat['compound']
+
+"""
+Confusion Matrix
+"""
+# confusion matrix
+cm = confusion_matrix(y_test,prediction)
+plt.clf()
+plt.imshow(cm,interpolation='nearest', cmap=plt.cm.Wistia)
+classNames = ['Pos','Neg']
+plt.title = ('Confusion Matrix')
+plt.ylabel('Predicted Label')
+plt.xlabel('Actual Label')
+tick_marks = np.arange(len(classNames))
+plt.xticks(tick_marks,classNames, rotation=0)
+plt.yticks(tick_marks,classNames)
+s = [['TP','FP'],['FN','TN']]
+    
+    
+for i in range(2):
+    for j in range(2):
+        plt.text(j,i, str(s[i][j])+ " = "+str(cm[i][j]))
+plt.show()
+
+
+"""
+Word Cloud
+"""
+
+def generate_word_cloud(word):
+    wc = WordCloud(width=800, height=500, random_state=21, max_font_size=100, colormap='Dark2').generate(word)
+    
+    plt.figure(figsize=(14,10))
+    plt.imshow(wc, interpolation='bilinear')
+    plt.axis('off')
+    plt.show()
+
+# general word cloud
+word = ' '.join([text for text in data_df['preprocess_data']])
+generate_word_cloud(word)
+
+# positive sentiment word cloud
+pos_cloud = ' '.join([text for text in data_df['preprocess_data'][data_df['sentiment']== 'pos']])
+generate_word_cloud(pos_cloud)
+
+# negative sentiment word cloud
+neg_cloud = ' '.join([text for text in data_df['preprocess_data'][data_df['sentiment'] == 'neg']])
+generate_word_cloud(neg_cloud)
+
+
+"""
+Chart
+"""
+
+
+sns.distplot(data_df['compound'], hist=True, kde=True, 
+
+             bins=int(30), color = 'darkred',
+
+             hist_kws={'edgecolor':'black'},axlabel ='Compound')
+
+from pylab import rcParams
+
+rcParams['figure.figsize'] = 10,15
+
+
+"""
+Top Review
+"""
+
+# sort top positive review
+pos_df = data_df[data_df['sentiment'] == 'pos'].sort_values("compound",ascending=False).head(10)
+pos_df[['tweets','pos','compound']]
+
+# sort top negative review
+neg_df = data_df[data_df['sentiment'] == 'neg'].sort_values("compound",ascending=False).head(10)
+neg_df[['tweets','neg','compound']]
+
+
+
